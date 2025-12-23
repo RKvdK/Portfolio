@@ -265,3 +265,23 @@ pull <- function(x) {
   x[1]
   
 }
+
+# Helper function to retrieve the marginal of X
+
+getXmar <- function(source = c("B", "pop"), B, pop, Xlvl, a = 0.5) {
+  
+  source <- match.arg(source) # Match the source argument
+  
+  if (source == "B") { # If the marginal of X is retrieved from sample B
+    
+    marX <- marSM(B$X, levels = Xlvl, a = a) # Compute the marginal of X in sample B
+    
+  } else { # If the marginal of X is retrieved from the population
+    
+    marX <- marSM(pop$X, levels = Xlvl, a = a) # Compute the marginal of X in the population
+    
+  }
+  
+  return(marX) # Return the marginal of X
+  
+}

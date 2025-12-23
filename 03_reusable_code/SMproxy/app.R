@@ -2,8 +2,8 @@
 
 library(shiny)
 library(here)
-library(tidyverse)
 library(ggplot2)
+library(DT) # Add colour to output table
 
 # Load external scripts
 
@@ -46,22 +46,99 @@ ui <- fluidPage(
   
   titlePanel("Exploration of Statistical Matching with a Proxy Variable"),
   
-  # Create action button
+  # Side bar 
   
-  actionButton("run", "Run the simulation"),
+  sidebarLayout(
+    
+    sidebarPanel(
+      
+      # Create slider input for the user to modify the number of Monte Carlo runs
+      
+      sliderInput("MCnum", "Number of Monte Carlo runs",
+                  min = 100,
+                  max = 1000,
+                  value = 200,
+                  step = 1
+      ),
+      
+      tags$hr(), # Horizontal line
+      
+      # Additional parameter input
+      
+      sliderInput("n", "Size of samples A and B",
+                   min = 1000,
+                   max = 10000,
+                   value = 2000,
+                   step = 100
+      ),
+      
+      
+      sliderInput("percExternal", "External sample proportion",
+                   min = 0.1,
+                   max = 0.9,
+                   value = 0.3,
+                   step = 0.1
+      ),
+      
+      sliderInput("percOverlap", "Overlap proportion",
+                   min = 0.1,
+                   max = 0.5,
+                   value = 0.2,
+                   step = 0.1
+      ),
+      
+      sliderInput("p_diag", "Proxy association strength",
+                   min = 0.1,
+                   max = 0.9,
+                   value = 0.5,
+                   step = 0.1
+      ),
+      
+      selectInput("w", "Misclassification probabilities",
+                  choices = c("Symmetrical", "Asymmetrical"),
+                  selected = "Symmetrical"
+      ),
+      
+      sliderInput("CIA", "Conditional independence assumption violation",
+                   min = 0.0,
+                   max = 1,
+                   value = 0.3,
+                   step = 0.1
+      ),
+      
+      selectInput("Xsource", "Source of the marginal distribution of X",
+                  choices = c("pop", "B"),
+                  selected = "B"
+                  ),
+      
+      tags$hr(), 
+      
+      # Create the action button
+      
+      actionButton("run", "Run the simulation")
+      
+    ),
+    
+    # Main panel
+    
+    mainPanel(
+      
+      wellPanel( # Ensure separation of output sections, when there is no simulation run yet
+        h4("Output table; mean RMSE value per estimator"),
+        DTOutput("tab"), # Output results table
+      ),
+      
+      tags$hr(),
+      
+      wellPanel(
+        h4("Output boxplots; RMSE distribution across the Monte Carlo runs"),
+        plotOutput("rmseplot") # Output RMSE plot
+      )
+      
+    )
+    
+  )
   
-  # Create slider input for the user to modify the number of Monte Carlo runs
-  
-  sliderInput("MCnum", "Number of Monte Carlo runs",
-              min = 1,
-              max = 10,
-              value = 3,
-              step = 1
-              ),
-  
-  tableOutput("tab"), # Output results table
-  plotOutput("rmse_plot") # Output RMSE plot
-
 )
 
 server <- function(input, output) {
@@ -88,21 +165,30 @@ server <- function(input, output) {
       incProgress(0.1, detail = "Finishing touch")
       list(
         sim = simout,
-        mc = mcout
+        mc = mcout,
+        para = list(
+          MCnum = as.integer(input$MCnum),
+          n = as.integer(input$n),
+          percExt = as.numeric(input$percExternal),
+          percOverlap = as.numeric(input$percOverlap),
+          p_diag = as.numeric(input$p_diag),
+          w = input$w,
+          CIA = as.numeric(input$CIA),
+          Xsource = input$Xsource
       )
-      
+      )
     })
     
   }, ignoreInit = TRUE)   # ignoreInit prevents the function from running at app initialization
   
   # Construct results table
   
-  output$tab <- renderTable({
+  output$tab <- renderDT({
     
     req(res()) # Ensure the results to be available
     mc <- res()$mc # Retrieve Monte Carlo results
     
-    data.frame(
+    tabdat <- data.frame(
       Estimator = c("DRE", # Doubly robust estimator
                 "IPF", # Iterative proportional fitting estimator
                 "EXT" # External model based estimator
@@ -112,7 +198,31 @@ server <- function(input, output) {
                mc$EXT$rmse_mean
               )
       )
-    }, digits = 4)
+    
+    # Rank estimator performance based on RMSE values
+    
+    tabdat$rank <- rank(tabdat$RMSE, ties.method = "first") 
+    
+    # Verbal performance indicator to enhance color blind accessibility
+    
+    tabdat$Performance <- c("Best", "Intermediate", "Worst")[tabdat$rank]
+    
+    datatable(
+      tabdat[, c("Estimator", "RMSE", "Performance")],
+      rownames = FALSE,
+      options = list(
+        dom = "t", # Show only the table
+        ordering = FALSE # Disable column ordering
+      )
+    ) %>%
+      formatRound("RMSE", 4) %>% # Round the RMSE values
+      formatStyle("Performance",
+        backgroundColor = styleEqual(
+          c("Best", "Intermediate", "Worst"),
+          c("green", "orange", "red") 
+        )
+      )
+  }, options = list(dom = "t"))
   
   # Construct RMSE plot
   
@@ -120,31 +230,38 @@ server <- function(input, output) {
     
     req(res()) # Ensure the results to be available
     mc <- res()$mc # Retrieve Monte Carlo results
+    m <- res()$para$MCnum # Retrieve number of Monte Carlo runs
+    
+    dre <- mc$DRE$rmse
+    ipf <- mc$IPF$rmse
+    ext <- mc$EXT$rmse
+    
+    m_use <- min(m, length(dre), length(ipf), length(ext)) # Ensure equal lengths for all estimators
     
     rmsedata <- data.frame(
       
-      Iteration = rep(1:input$MCnum, 3), # Iteration numbers for all three estimators
+      Iteration = c(seq_len(m_use), seq_len(m_use), seq_len(m_use)), # Iteration numbers for all three estimators
       
-      Estimator = factor(rep(c("DRE", "IPF", "EXT"), 
-                             levels = c("DRE", "IPF", "EXT"))), 
-      RMSEmean = c(
-        mc$DRE$rmse,
-        mc$IPF$rmse,
-        mc$EXT$rmse
-      ),
+      Estimator = factor(
+        c(rep("DRE", m_use), rep("IPF", m_use), rep("EXT", m_use)),
+        levels = c("DRE", "IPF", "EXT")),
+      
+      RMSE = c(
+        dre[seq_len(m_use)],
+        ipf[seq_len(m_use)],
+        ext[seq_len(m_use)]
+      )
+    )
       
       # Generate the plot
       
-      ggplot(rmsedata, aes(x = Estimator, y = RMSE)) +
-        geom_col(fill = "pink") +
+      ggplot(rmsedata, aes(x = Estimator, y = RMSE, fill = Estimator)) +
+        geom_boxplot(fill = "pink") +
         labs(
-          title = "Average RMSE value per estimator",
           x = "Estimator",
           y = "RMSE"
         ) +
-        theme_minimal()
-      
-    )
+        theme_bw()
     
   })
   
